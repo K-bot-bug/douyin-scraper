@@ -84,6 +84,69 @@ python douyin_scraper.py
 | `create_time` | 发布时间（Unix 时间戳） |
 | `author` | 作者昵称 |
 
+## 项目实现
+
+### 整体架构
+
+```
+DouyinScraper（主控制器）
+├── launch()          浏览器初始化 + 反检测配置
+├── login()           账号密码登录 + 登录态持久化
+├── scrape_tab()      单 Tab 数据抓取（监听 API 响应）
+│   ├── 监听 response 事件
+│   ├── 滚动加载触发分页
+│   └── 解析 JSON 提取字段
+└── export_results()  数据导出（JSON + CSV）
+```
+
+### 核心实现细节
+
+**1. 浏览器初始化与反检测（launch）**
+- 使用 Playwright 启动可见 Chromium，关闭 headless 模式
+- 注入 `--disable-blink-features=AutomationControlled` 屏蔽自动化标记
+- 调用 `playwright_stealth.Stealth()` 重写 `navigator.webdriver`、`chrome.runtime` 等检测特征
+- 加载 `douyin_state.json` 中的已缓存 Cookie，跳过首次登录流程
+
+**2. 登录态管理（login）**
+- 导航至 `/user/self` 触发登录弹窗
+- 通过 JS 定位「密码登录」按钮并点击（兼容抖音 DOM 动态变化）
+- 自动填写账号密码后提交，检测页面是否含「未登录」字样判断登录结果
+- 登录成功后调用 `storage_state()` 序列化全部 Cookie 和本地存储，保存至 `douyin_state.json`
+
+**3. 数据抓取与去重（scrape_tab）**
+- **监听网络响应**：注册 `page.on("response")` 回调，拦截包含 `aweme` 或 `feed` 的 API 请求
+- **JSON 解析**：从响应体中提取 `aweme_list` 数组，读取每个视频的统计数据字段
+- **去重机制**：维护 `seen_ids` 集合（`aweme_id`），已收录的条目直接跳过
+- **滚动加载策略**：
+  - 每次滚动 2000px，等待 2s 触发懒加载
+  - 连续 5 次 `scrollHeight` 无变化则判定加载完毕
+  - 最多滚动 100 次防止死循环
+  - 到达页面底部时提前终止
+
+**4. 数据导出（export_results）**
+- **JSON 格式**：保留完整字段，含元数据（抓取时间、Tab 名称、总数）
+- **CSV 格式**：使用 `utf-8-sig` 编码（Excel 原生支持中文），列出 11 个常用字段
+
+### 技术难点与解决
+
+| 问题 | 解决方案 |
+|------|---------|
+| 抖音检测自动化脚本 | playwright-stealth + navigator.webdriver 覆写 |
+| 登录弹窗元素定位不稳定 | JS querySelectorAll 遍历匹配文本「密码登录」 |
+| 页面滚动到底部后仍加载 | scrollHeight 连续 5 次无变化作为终止条件 |
+| 视频 ID 重复抓取 | seen_ids 集合去重 |
+| 账号密码硬编码风险 | dotenv 环境变量配置，.env 加入 .gitignore |
+
+### 依赖说明
+
+| 库 | 用途 |
+|----|------|
+| playwright | 浏览器自动化，控制 Chromium 完成登录和滚动 |
+| playwright-stealth | 消除浏览器自动化特征，绕过平台检测 |
+| python-dotenv | 从 .env 文件读取账号密码，避免硬编码 |
+
+---
+
 ## 注意事项
 
 - 本工具仅用于个人数据备份和分析，请勿用于商业用途
